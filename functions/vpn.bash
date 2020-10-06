@@ -105,9 +105,9 @@ install_wireguard() {
 create_wireguard_config() {
   local configdir
   local pubIP
-  local IFACE
-  local WGSERVERIP WGCLIENTIP VPNSERVER PORT
-  local SERVERPRIVATE SERVERPUBLIC CLIENTPRIVATE CLIENTPUBLIC
+  local interface
+  local wgServerIp wgClientIp vpnServer port
+  local serverPrivate serverPublic clientPrivate clientPublic
 
   if ! [[ -x $(command -v dig) ]]; then
     echo -n "$(timestamp) [openHABian] Installing Wireguard required packages (dnsutils)... "
@@ -116,19 +116,19 @@ create_wireguard_config() {
 
   if ! pubIP="$(get_public_ip)"; then echo "FAILED (public ip)"; return 1; fi
   configdir=/etc/wireguard
-  IFACE=${1:-eth0}
-  PORT="${2:-51900}"
-  WGSERVERIP="${3:-10.253.4}.1"
-  WGCLIENTIP="${3:-10.253.4}.2"
-  VPNSERVER="${4:-$pubIP}"
-  SERVERPRIVATE=$(cat "$configdir"/server_private_key)
-  SERVERPUBLIC=$(cat "$configdir"/server_public_key)
-  CLIENTPRIVATE=$(cat "$configdir"/client_private_key)
-  CLIENTPUBLIC=$(cat "$configdir"/client_public_key)
+  interface=${1:-eth0}
+  port="${2:-51900}"
+  wgServerIp="${3:-10.253.4}.1"
+  wgClientIp="${3:-10.253.4}.2"
+  vpnServer="${4:-$pubIP}"
+  serverPrivate=$(cat "$configdir"/server_private_key)
+  serverPublic=$(cat "$configdir"/server_public_key)
+  clientPrivate=$(cat "$configdir"/client_private_key)
+  clientPublic=$(cat "$configdir"/client_public_key)
 
   mkdir -p "$configdir"
-  sed -e "s|%IFACE|${IFACE}|g" -e "s|%PORT|${PORT}|g" -e "s|%VPNSERVER|${VPNSERVER}|g" -e "s|%WGSERVERIP|${WGSERVERIP}|g" -e "s|%WGCLIENTIP|${WGCLIENTIP}|g" -e "s|%SERVERPRIVATE|${SERVERPRIVATE}|g" -e "s|%CLIENTPUBLIC|${CLIENTPUBLIC}|g" "${BASEDIR:-/opt/openhabian}"/includes/wireguard-server.conf-template > "$configdir"/wg0.conf
-  sed -e "s|%IFACE|${IFACE}|g" -e "s|%PORT|${PORT}|g" -e "s|%VPNSERVER|${VPNSERVER}|g" -e "s|%WGSERVERIP|${WGSERVERIP}|g" -e "s|%WGCLIENTIP|${WGCLIENTIP}|g" -e "s|%SERVERPUBLIC|${SERVERPUBLIC}|g" -e "s|%CLIENTPRIVATE|${CLIENTPRIVATE}|g" "${BASEDIR:-/opt/openhabian}"/includes/wireguard-client.conf-template > "$configdir"/wg0-client.conf
+  sed -e "s|%IFACE|${interface}|g" -e "s|%PORT|${port}|g" -e "s|%VPNSERVER|${vpnServer}|g" -e "s|%WGSERVERIP|${wgServerIp}|g" -e "s|%WGCLIENTIP|${wgClientIp}|g" -e "s|%SERVERPRIVATE|${serverPrivate}|g" -e "s|%CLIENTPUBLIC|${clientPublic}|g" "${BASEDIR:-/opt/openhabian}"/includes/wireguard-server.conf-template > "$configdir"/wg0.conf
+  sed -e "s|%IFACE|${interface}|g" -e "s|%PORT|${port}|g" -e "s|%VPNSERVER|${vpnServer}|g" -e "s|%WGSERVERIP|${wgServerIp}|g" -e "s|%WGCLIENTIP|${wgClientIp}|g" -e "s|%SERVERPUBLIC|${serverPublic}|g" -e "s|%CLIENTPRIVATE|${clientPrivate}|g" "${BASEDIR:-/opt/openhabian}"/includes/wireguard-client.conf-template > "$configdir"/wg0-client.conf
 
   chmod -R og-rwx "$configdir"/*
 }
@@ -168,4 +168,62 @@ setup_wireguard() {
 
   echo -n "$(timestamp) [openHABian] Generating QR to load config on the client side (download Wireguard app from PlayStore or AppStore)... "
   qrencode -t ansiutf8 </etc/wireguard/wg0-client.conf
+}
+
+
+## Install Tailscale from their own repo
+## Valid arguments: "install" or "remove"
+##
+##   install_tailscale(String action)
+##
+install_tailscale() {
+  local queryText="We will install the tailscale VPN client on your system. Use it to securely interconnect multiple openHAB(ian) instances.\\nSee https://tailscale.com/blog/how-tailscale-works/ for a comprehensive explanation how it creates a secure VPN. For personal use, you can get a free solo service from tailscale.com."
+  local serviceTargetDir="/lib/systemd/system"
+
+  if [[ -n "$INTERACTIVE" ]]; then
+    if (whiptail --title "VPN setup" --yes-button "Continue" --no-button "Cancel" --yesno "$queryText" 12 80); then echo "OK"; else echo "CANCELED"; return 1; fi
+  fi
+
+  if [[ "$1" == "remove" ]]; then
+    cond_redirect systemctl disable tailscaled.service
+    rm -f ${serviceTargetDir}/tailscale*
+    if ! cond_redirect systemctl -q daemon-reload &> /dev/null; then echo "FAILED (daemon-reload)"; return 1; fi
+    if ! apt-get purge --yes tailscale; then echo "FAILED (purge tailscale)"; return 1; fi
+    return 0
+  fi
+  if [[ "$1" != "install" ]]; then echo "FAILED"; return 1; fi
+
+  # Add Tailscale's GPG key
+  add_keys https://pkgs.tailscale.com/stable/raspbian/buster.gpg
+  # Add the tailscale repository
+  curl https://pkgs.tailscale.com/stable/raspbian/buster.list | tee /etc/apt/sources.list.d/tailscale.list
+  if ! cond_redirect apt-get update; then echo "FAILED (update apt lists)"; return 1; fi
+  # Install Tailscale
+  if cond_redirect apt-get install --yes tailscale; then echo "OK"; else echo "FAILED (install tailscale)"; return 1; fi
+
+  return 0
+}
+
+
+## add node to private Tailscale network
+##
+##   setup_tailscale(String action)
+##
+setup_tailscale() {
+  local preAuthKey=${preauthkey:-preauthkey}
+
+  if [[ -n $UNATTENDED ]] && [[ -z $preAuthKey ]]; then
+    echo "$(timestamp) [openHABian] Beginning tailscale VPN setup... CANCELED (no pre auth key provided)"
+    return 0
+  fi
+  if [[ -n "$INTERACTIVE" ]]; then
+    if ! preAuthKey="$(whiptail --title "Enter pre auth key" --inputbox "\\nIf you have not received / created the Tailscale pre auth key at this stage, please do so now or tell your administrator to. This can be done on the admin console. There's a menu option on the Tailscale Windows client to lead you there.\\n\\nPlease enter the Tailscale pre auth key for this system:" 9 80 "$preAuthKey" 3>&1 1>&2 2>&3)"; then echo "CANCELED"; return 0; fi
+  fi
+
+  if ! tailscale up --authkey "${preAuthKey}"; then echo "FAILED (join Tailscale VPN)"; return 1; fi 
+  # shellcheck disable=SC2154
+  tailscale status | mail -s "openHABian client joined tailscale VPN" "$adminmail"
+  if cond_redirect sed -i -e 's|^preauthkey=.*$|preauthkey=xxxxxxxx|g' /etc/openhabian.conf; then echo "OK"; else echo "FAILED (remove Tailscale pre-auth key)"; exit 1; fi
+
+  return 0
 }
