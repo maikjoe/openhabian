@@ -272,12 +272,12 @@ directories of yours.
 
 Note: the raw SD card backup was left out for the AWS S3 config, as that would require a lot of bandwidth and runtime.
 
-openHABian setup routine will create Systemd-Timers in `/etc/systemd/system/` to start all backups you select every night at around 01:00AM.
+openHABian setup routine will create systemd.timer configurations in `/etc/systemd/system/` to start all backups you select every night at around 01:00AM.
 
 ## Backup
 
 Find below a terminal session log of a manually started backup run.
-It's showing the three most important commands to use. They all can be started as user *backup* only, interactively, via Systemd-Timers or via cron,
+It's showing the three most important commands to use. They all can be started as user *backup* only, interactively, via systemd.timer or cron,
 and you always need to specify the config to use. You can have multiple backup configs in parallel use.
 
 The `amcheck` command is meant to remind you to put in the right removeable storage medium such as a tape or SD card,
